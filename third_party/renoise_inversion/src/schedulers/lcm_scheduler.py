@@ -1,6 +1,9 @@
-from diffusers import LCMScheduler
-from diffusers.utils import BaseOutput
-from diffusers.utils.torch_utils import randn_tensor
+# from diffusers import LCMScheduler
+# from diffusers.utils import BaseOutput
+# from diffusers.utils.torch_utils import randn_tensor
+from third_party.diffusers29 import LCMScheduler
+from third_party.diffusers29.utils import BaseOutput
+from third_party.diffusers29.utils.torch_utils import randn_tensor
 import torch
 from typing import List, Optional, Tuple, Union
 import numpy as np

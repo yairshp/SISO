@@ -17,34 +17,22 @@
 
 import argparse
 import logging
-import math
 import os
-import random
-import shutil
-from contextlib import nullcontext
-from pathlib import Path
 
 import datasets
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.utils.checkpoint
 import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import (
     DistributedDataParallelKwargs,
-    DistributedType,
     ProjectConfiguration,
     set_seed,
 )
-from datasets import load_dataset
-from huggingface_hub import create_repo, upload_folder
-from packaging import version
 from peft import LoraConfig, set_peft_model_state_dict, get_peft_model
 from peft.utils import get_peft_model_state_dict
-from torchvision import transforms
-from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, PretrainedConfig
 
@@ -60,15 +48,11 @@ from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
     _set_state_dict_into_text_encoder,
     cast_training_params,
-    compute_snr,
 )
 from diffusers.utils import (
-    check_min_version,
     convert_state_dict_to_diffusers,
     convert_unet_state_dict_to_peft,
-    is_wandb_available,
 )
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_torch_npu_available, is_xformers_available
 from diffusers.utils.torch_utils import is_compiled_module
 
@@ -83,12 +67,9 @@ import utils.renoise_inversion_utils as renoise_inversion_utils
 import pytorch_lightning as pl
 from PIL import Image
 
-pl.seed_everything(35)
-
 logger = get_logger(__name__)
 if is_torch_npu_available():
     torch.npu.config.allow_internal_format = False
-
 
 def import_model_class_from_model_name_or_path(
     pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
@@ -460,25 +441,19 @@ def parse_args(input_args=None):
         help="debug loss for each image, if filenames are available in the dataset",
     )
     # added args
-    parser.add_argument("--criterion_type", type=str, required=True)
-    parser.add_argument(
-        "--classifier_model_name", type=str, default="vit_large_patch14_dinov2.lvd142m"
-    )
-    parser.add_argument("--subject_image_path_or_url", type=str, required=False)
+    parser.add_argument("--subject_image_path", type=str, required=False)
     parser.add_argument("--subject_class", type=str, required=False, default=None)
-    parser.add_argument("--input_image_path_or_url", type=str, required=True)
+    parser.add_argument("--input_image_path", type=str, required=True)
     parser.add_argument("--input_class", type=str, required=False, default=None)
-    parser.add_argument(
-        "--inversion_type", type=str, choices=["nri", "renoise"], default="nri"
-    )
     parser.add_argument("--inversion_max_step", type=float, default=0.75)
     parser.add_argument("--bg_mse_loss_weight", type=float, default=0.0)
+    parser.add_argument("--dino_model_name", type=str, default="vit_large_patch14_dinov2.lvd142m")
+    parser.add_argument("--ir_features_path", type=str, default="third_party/IR_dependencies/ir_features.pth")
     parser.add_argument("--ir_features_weight", type=float, default=1.0)
     parser.add_argument("--dino_features_weight", type=float, default=1.0)
     parser.add_argument("--early_stopping_max_count", type=int, default=5)
     parser.add_argument("--early_stopping_threshold_percentage", type=int, default=5)
     parser.add_argument("--log_every_epoch", action="store_true")
-    parser.add_argument("--save_loss_threshold", type=float, default=None)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -491,83 +466,39 @@ def parse_args(input_args=None):
 
     return args
 
-
-def get_criterion(criterion_type: str):
-    if criterion_type == CriterionType.classifier_features.value:
-        return dino_utils.get_dino_features_negative_mean_cos_sim
-    if criterion_type == CriterionType.features_multi_model.value:
-        return dino_utils.get_features_mean_cos_sim_multi_model
-    if criterion_type == CriterionType.intermediate_features.value:
-        return dino_utils.get_intermediate_features_mean_cos_sim
-    if criterion_type == CriterionType.ir_features.value:
-        return ir_features_utils.get_ir_features_negative_mean_cos_sim
-    # if criterion_type == CriterionType.alpha_clip.value:
-    #     return alpha_clip_utils.get_alpha_clip_features_mean_cos_sim
-    raise ValueError(f"Loss type {criterion_type} is not supported.")
-
-
 def get_inversion_config_and_last_latent(
     args, input_image, pipeline_inversion, pipeline_inference, inversion_prompt
 ):
-    if args.inversion_type == "nri":
-        inversion_config = nri_inversion_utils.get_inversion_config()
-        last_latent = nri_inversion_utils.get_last_latent(
-            inversion_pipeline=pipeline_inversion,
-            init_image=input_image,
-            inversion_prompt=inversion_prompt,
-            inversion_config=inversion_config,
-            inversion_hp=[2, 0.1, 0.2],
-        )
-    elif args.inversion_type == "renoise":
-        inversion_config = renoise_inversion_utils.get_inversion_config(
-            args.inversion_max_step
-        )
-        last_latent = renoise_inversion_utils.invert(
-            pipe_inversion=pipeline_inversion,
-            pipe_inference=pipeline_inference,
-            init_image=input_image,
-            prompt=inversion_prompt,
-            cfg=inversion_config,
-        )
-
+    inversion_config = renoise_inversion_utils.get_inversion_config(
+        args.inversion_max_step
+    )
+    last_latent = renoise_inversion_utils.invert(
+        pipe_inversion=pipeline_inversion,
+        pipe_inference=pipeline_inference,
+        init_image=input_image,
+        prompt=inversion_prompt,
+        cfg=inversion_config,
+    )
     return inversion_config, last_latent
 
 
 def generate_image(
-    inversion_type, pipeline_inference, prompt, last_latent, inv_cfg, generator
+    pipeline_inference, prompt, last_latent, inv_cfg, generator
 ):
-    if inversion_type == "nri":
-        image = (
-            pipeline_inference(
-                prompt=prompt,
-                num_inference_steps=inv_cfg.num_inference_steps,
-                negative_propmt="",
-                callback_on_step_end=nri_inversion_utils.inference_callback,
-                image=last_latent,
-                strength=inv_cfg.inversion_max_step,
-                denoising_start=1.0 - inv_cfg.inversion_max_step,
-                guidance_scale=1.2,
-                generator=generator,
-                output_type="pt",
-            )
-            .images[0]
-            .unsqueeze(0)
+    image = (
+        pipeline_inference(
+            prompt=prompt,
+            num_inference_steps=inv_cfg.num_inference_steps,
+            negative_prompt=prompt,
+            image=last_latent,
+            strength=inv_cfg.inversion_max_step,
+            denoising_start=1.0 - inv_cfg.inversion_max_step,
+            guidance_scale=1.0,
+            output_type="pt",
         )
-    elif inversion_type == "renoise":
-        image = (
-            pipeline_inference(
-                prompt=prompt,
-                num_inference_steps=inv_cfg.num_inference_steps,
-                negative_prompt=prompt,
-                image=last_latent,
-                strength=inv_cfg.inversion_max_step,
-                denoising_start=1.0 - inv_cfg.inversion_max_step,
-                guidance_scale=1.0,
-                output_type="pt",
-            )
-            .images[0]
-            .unsqueeze(0)
-        )
+        .images[0]
+        .unsqueeze(0)
+    )
     return image
 
 
@@ -585,30 +516,15 @@ def update_early_stopping_count(
     return best_loss, early_stopping_count
 
 
-# def log_all_losses(
-#     total_losses,
-#     bg_losses,
-#     ir_losses,
-#     dino_losses,
-#     args,
-# ):
-#     general_utils.plot_losses(total_losses, f"{args.output_dir}/total_losses.png")
-#     if args.bg_mse_loss_weight > 0.0:
-#         general_utils.plot_losses(bg_losses, f"{args.output_dir}/bg_losses.png")
-#     if args.criterion_type == CriterionType.ir_dino_ensemble.value:
-#         general_utils.plot_losses(ir_losses, f"{args.output_dir}/ir_losses.png")
-#         general_utils.plot_losses(dino_losses, f"{args.output_dir}/dino_losses.png")
-
-
 def main(args):
     print("loading images...")
-    input_image = general_utils.load_image(args.input_image_path_or_url)
+    input_image = general_utils.load_image(args.input_image_path)
     input_image = general_utils.resize_and_center_crop(
         input_image, (args.resolution, args.resolution)
     )
     input_image_arr = general_utils.image_to_tensor(input_image).cuda()
 
-    subject_image = general_utils.load_image(args.subject_image_path_or_url)
+    subject_image = general_utils.load_image(args.subject_image_path)
     subject_image_arr = general_utils.image_to_tensor(subject_image)
 
     print("loading labeler model...")
@@ -686,20 +602,6 @@ def main(args):
     if accelerator.is_main_process:
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
-
-    # Load the tokenizers
-    tokenizer_one = AutoTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="tokenizer",
-        revision=args.revision,
-        use_fast=False,
-    )
-    tokenizer_two = AutoTokenizer.from_pretrained(
-        args.pretrained_model_name_or_path,
-        subfolder="tokenizer_2",
-        revision=args.revision,
-        use_fast=False,
-    )
 
     # import correct text encoder classes
     text_encoder_cls_one = import_model_class_from_model_name_or_path(
@@ -991,69 +893,35 @@ def main(args):
         disable=not accelerator.is_local_main_process,
     )
 
-    assert (
-        args.criterion_type != CriterionType.ir_dino_ensemble.value
-        and args.ir_features_weight == 1.0
-        and args.dino_features_weight == 1.0
-    ) or (args.criterion_type == CriterionType.ir_dino_ensemble.value)
+    dino_criterion = dino_utils.get_dino_features_negative_mean_cos_sim
+    ir_criterion = ir_features_utils.get_ir_features_negative_mean_cos_sim
 
-    # get criterion
-    if (
-        args.criterion_type == CriterionType.ir_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        ir_criterion = get_criterion(CriterionType.ir_features.value)
-    if (
-        args.criterion_type == CriterionType.classifier_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        dino_criterion = get_criterion(CriterionType.classifier_features.value)
-    if args.criterion_type == CriterionType.alpha_clip.value:
-        alpha_clip_criterion = get_criterion(CriterionType.alpha_clip.value)
-
-    # get model
-    if (
-        args.criterion_type == CriterionType.ir_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        ir_feature_extractor, feature_extractor_transforms = (
-            ir_features_utils.get_ir_model_and_transforms(
-                "IR_dependencies/ir_features.pth",
-                device=accelerator.device,
-            )
-        )  # TODO add argument for model path
-        ir_feature_extractor.eval()
-        ir_feature_extractor = ir_feature_extractor.to(accelerator.device)
-    if (
-        args.criterion_type == CriterionType.classifier_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        classifier, transforms_configs = (
+    dino, transforms_configs = (
             dino_utils.get_model_and_transforms_configs(
-                args.classifier_model_name
+                args.dino_model_name
             )
         )
+    ir_feature_extractor, feature_extractor_transforms = (
+            ir_features_utils.get_ir_model_and_transforms(
+                args.ir_features_path,
+                device=accelerator.device,
+            )
+        ) 
+    ir_feature_extractor.eval()
+    ir_feature_extractor = ir_feature_extractor.to(accelerator.device)
 
-    # get reference features
-    if (
-        args.criterion_type == CriterionType.ir_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        with torch.no_grad():
-            ir_subject_image_features = ir_features_utils.get_ir_features(
-                ir_feature_extractor, feature_extractor_transforms, subject_image_arr
-            )
-    if (
-        args.criterion_type == "classifier_features"
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        dino_subject_image_input = dino_utils.prepare_for_dino(
-            subject_image_arr, transforms_configs
-        ).cuda()
-        with torch.no_grad():
-            dino_subject_image_features = dino_utils.get_dino_features(
-                classifier, dino_subject_image_input
-            )
+    dino_subject_image_input = dino_utils.prepare_for_dino(
+        subject_image_arr, transforms_configs
+    ).cuda()
+    with torch.no_grad():
+        dino_subject_image_features = dino_utils.get_dino_features(
+            dino, dino_subject_image_input
+        )
+
+    with torch.no_grad():
+        ir_subject_image_features = ir_features_utils.get_ir_features(
+            ir_feature_extractor, feature_extractor_transforms, subject_image_arr
+        )
 
     pipeline_inversion, pipeline_inference = general_utils.get_pipelines(
         args.pretrained_model_name_or_path,
@@ -1089,7 +957,6 @@ def main(args):
         generator.manual_seed(args.seed)
         with accelerator.accumulate(unet):
             image = generate_image(
-                args.inversion_type,
                 pipeline_inference,
                 generation_prompt,
                 last_latent,
@@ -1099,30 +966,23 @@ def main(args):
             image_out = image  # save for visaualization
 
             loss = 0
-            if (
-                args.criterion_type == CriterionType.ir_features.value
-                or args.criterion_type == CriterionType.ir_dino_ensemble.value
-            ):
-                ir_loss = ir_criterion(
-                    ir_feature_extractor,
-                    feature_extractor_transforms,
-                    image,
-                    ir_subject_image_features,
-                )
-                ir_losses.append(ir_loss.detach().item())
-                loss += args.ir_features_weight * ir_loss
-            if (
-                args.criterion_type == CriterionType.classifier_features.value
-                or args.criterion_type == CriterionType.ir_dino_ensemble.value
-            ):
-                dino_loss = dino_criterion(
-                    classifier,
-                    transforms_configs,
-                    image,
-                    dino_subject_image_features,
-                )
-                dino_losses.append(dino_loss.detach().item())
-                loss += args.dino_features_weight * dino_loss
+            ir_loss = ir_criterion(
+                ir_feature_extractor,
+                feature_extractor_transforms,
+                image,
+                ir_subject_image_features,
+            )
+            ir_losses.append(ir_loss.detach().item())
+            loss += args.ir_features_weight * ir_loss
+
+            dino_loss = dino_criterion(
+                dino,
+                transforms_configs,
+                image,
+                dino_subject_image_features,
+            )
+            dino_losses.append(dino_loss.detach().item())
+            loss += args.dino_features_weight * dino_loss
 
             if args.bg_mse_loss_weight > 0.0:
                 bg_loss = general_utils.get_bg_mse_loss(
@@ -1162,29 +1022,12 @@ def main(args):
                 progress_bar.set_postfix(**logs)
 
             if args.log_every_epoch and accelerator.is_main_process:
-                image_out = general_utils.numpy_to_pil(
-                    image_out.detach().permute(0, 2, 3, 1).cpu().numpy()
-                )[0]
+                if type(image_out) != Image.Image:
+                    image_out = general_utils.numpy_to_pil(
+                        image_out.detach().permute(0, 2, 3, 1).cpu().numpy()
+                    )[0]
                 image_out.save(f"{args.output_dir}/epoch_{epoch}.png")
-
-                general_utils.log_all_losses(
-                    {
-                        "total_losses": total_losses,
-                        **(
-                            {"bg_losses": bg_losses}
-                            if args.bg_mse_loss_weight > 0.0
-                            else {}
-                        ),
-                        **(
-                            {"ir_losses": ir_losses, "dino_losses": dino_losses}
-                            if args.criterion_type
-                            == CriterionType.ir_dino_ensemble.value
-                            else {}
-                        ),
-                    },
-                    args.output_dir,
-                )
-
+                
             if loss <= best_loss:
                 if type(image_out) != Image.Image:
                     image_out = general_utils.numpy_to_pil(
@@ -1196,32 +1039,8 @@ def main(args):
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-    if args.save_loss_threshold is None or best_loss < args.save_loss_threshold:
-        # save losses array to disk as an npy file
-        np.save(f"{args.output_dir}/total_losses.npy", np.array(total_losses))
-        if args.criterion_type == CriterionType.ir_dino_ensemble.value:
-            np.save(f"{args.output_dir}/ir_losses.npy", np.array(ir_losses))
-            np.save(f"{args.output_dir}/dino_losses.npy", np.array(dino_losses))
-        if args.bg_mse_loss_weight > 0.0:
-            np.save(f"{args.output_dir}/bg_losses.npy", np.array(bg_losses))
-
-        # save best image
-        best_image.save(f"{args.output_dir}/result.png")
-
-        if not args.log_every_epoch:
-            general_utils.log_all_losses(
-                {
-                    "total_losses": total_losses,
-                    **(
-                        {"ir_losses": ir_losses, "dino_losses": dino_losses}
-                        if args.criterion_type == CriterionType.ir_dino_ensemble.value
-                        else {}
-                    ),
-                },
-                args.output_dir,
-            )
-    else:
-        print("Loss threshold not met. Not saving results.")
+    # save best image
+    best_image.save(f"{args.output_dir}/result.png")
 
     accelerator.end_training()
 

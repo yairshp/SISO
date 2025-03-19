@@ -1,9 +1,12 @@
 import torch
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-from diffusers import StableDiffusionXLImg2ImgPipeline
-from diffusers.utils.torch_utils import randn_tensor
+# from diffusers import StableDiffusionXLImg2ImgPipeline
+# from diffusers.utils.torch_utils import randn_tensor
+from third_party.diffusers29 import StableDiffusionXLImg2ImgPipeline
+from third_party.diffusers29.utils.torch_utils import randn_tensor
 
-from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import (
+# from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import (
+from third_party.diffusers29.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import (
     StableDiffusionXLPipelineOutput,
     retrieve_timesteps,
     PipelineImageInput,

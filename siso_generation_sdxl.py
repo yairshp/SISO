@@ -62,10 +62,6 @@ from peft import LoraConfig, set_peft_model_state_dict
 from local_pipelines.pipeline_stable_diffusion_xl_with_grads import (
     StableDiffusionXLPipelineWithGrads,
 )
-from local_pipelines.pipeline_stable_diffusion_xl_img2img_with_grads import (
-    StableDiffusionXLImg2ImgPipelineWithGrads,
-)
-from utils.enums import CriterionType
 import utils.dino_utils as dino_utils
 import utils.general_utils as general_utils
 import utils.ir_features_utils as ir_features_utils

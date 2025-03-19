@@ -1,7 +1,8 @@
 import pyrallis
 import torch
 from PIL import Image
-from diffusers.utils.torch_utils import randn_tensor
+from third_party.diffusers29.utils.torch_utils import randn_tensor
+# from diffusers.utils.torch_utils import randn_tensor
 
 from src.config import RunConfig
 from src.utils.enums_utils import model_type_to_size, is_stochastic

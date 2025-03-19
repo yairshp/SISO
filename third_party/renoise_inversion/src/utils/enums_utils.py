@@ -1,5 +1,6 @@
 import torch
-from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline
+from third_party.diffusers29 import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline
+# from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline
 
 from third_party.renoise_inversion.src.eunms import Model_Type, Scheduler_Type
 from third_party.renoise_inversion.src.schedulers.euler_scheduler import (
