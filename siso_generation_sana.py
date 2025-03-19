@@ -1041,11 +1041,11 @@ def main(args):
     accelerator.end_training()
 
     if args.save_weights:
-        Path(os.path.join(args.weights_output_dir, "weights", "lora")).mkdir(
+        Path(args.weights_output_dir).mkdir(
             parents=True, exist_ok=True
         )
         SanaPipeline.save_lora_weights(
-            save_directory=os.path.join(args.weights_output_dir, "weights", "lora"),
+            save_directory=args.weights_output_dir,
             transformer_lora_layers=best_transformer_lora_layers,
         )
 

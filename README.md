@@ -49,22 +49,30 @@ Finally, download IR model weights from [here](https://www.kaggle.com/datasets/l
 ### FLUX
 ```
 python siso_generation_flux.py --subject_image_path example_images/dog_subject.png --prompt a\ photo\ of\ a\ dog --train_text_encoder --output_dir logs/dog_generation --lr_warmup_steps 0 --lr_scheduler constant --train_batch_size 1 --resolution 512 --pretrained_model_name_or_path black-forest-labs/FLUX.1-schnell  --num_train_epochs 50 --early_stopping_threshold_percentage 3 --early_stopping_max_count 7 --num_inference_steps 1 --learning_rate 2e-4 --seed=42 --save_weights --weights_output_dir weights/dog --ir_features_path <path_to_IR_weights> --mixed_precision bf16
+
+# use the optimized weights for different prompts
+python inference_prompt_simplification.py --model_name black-forest-labs/FLUX.1-schnell --lora_weights_path <path/to/weights> --num_inference_steps 4 --prompt "a dog in the park" --guidance_scale 0.0 --output_path <path/to/output> --seed 42
+
 ```
 
 ### SDXL
 
 ```
 python siso_generation_flux.py --subject_image_path example_images/dog_subject.png --prompt a\ photo\ of\ a\ dog --train_text_encoder --output_dir logs/dog_generation --lr_warmup_steps 0 --lr_scheduler constant --train_batch_size 1 --resolution 512 --pretrained_model_name_or_path stabilityai/sdxl-turbo --num_train_epochs 50 --early_stopping_threshold_percentage 3 --early_stopping_max_count 7 --num_inference_steps 1 --learning_rate 2e-4 --seed=42 --save_weights --weights_output_dir weights/dog --ir_features_path <path_to_IR_weights>
+
+# use the optimized weights for different prompts
+python inference_prompt_simplification.py --model_name black-forest-labs/FLUX.1-schnell --lora_weights_path </path/to/weights> --num_inference_steps 4 --prompt "a dog in the park" --guidance_scale 0.0 --output_path </path/to/output> --seed 42
 ```
 
 ### Sana
 
 ```
 python siso_generation_sana.py --subject_image_path example_images/dog_subject.png --prompt a\ photo\ of\ a\ dog --output_dir logs/dog_generation --lr_warmup_steps 0 --lr_scheduler constant --train_batch_size 1 --resolution 512 --pretrained_model_name_or_path Efficient-Large-Model/Sana_1600M_512px_diffusers  --num_train_epochs 50 --early_stopping_threshold_percentage 3 --early_stopping_max_count 5 --num_inference_steps 20 --learning_rate 8e-4 --seed=42 --save_weights --weights_output_dir weights/dog --ir_features_path <path_to_IR_weights>  --num_grad_steps 3 
+
+
+# use the optimized weights for different prompts
+python inference_prompt_simplification.py --model_name Efficient-Large-Model/Sana_1600M_512px_diffusers  --lora_weights_path </path/to/weights> --num_inference_steps 20 --prompt "a dog in the park" --guidance_scale 4.5 --output_path </path/to/output> --seed 42
 ```
-
-
-To use the LoRA weights for inference on another prompt, follow the instructions [here](https://huggingface.co/docs/diffusers/en/using-diffusers/loading_adapters#lora).
 
 
 ## Run SISO for Editing

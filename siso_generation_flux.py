@@ -20,7 +20,6 @@ import logging
 import os
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.utils.checkpoint
 import transformers
@@ -1333,11 +1332,11 @@ def main(args):
     accelerator.end_training()
 
     if args.save_weights:
-        Path(os.path.join(args.weights_output_dir, "weights", "lora")).mkdir(
+        Path(args.weights_output_dir).mkdir(
             parents=True, exist_ok=True
         )
         FluxPipeline.save_lora_weights(
-            save_directory=os.path.join(args.weights_output_dir, "weights", "lora"),
+            save_directory=args.weights_output_dir,
             transformer_lora_layers=best_lora_params["transformer"],
             text_encoder_lora_layers=best_lora_params["text_encoder"],
         )

@@ -982,12 +982,12 @@ def main(args):
     torch.cuda.empty_cache()
 
     if args.save_weights:
-        Path(os.path.join(args.weights_output_dir, "weights", "lora")).mkdir(
+        Path(args.weights_output_dir).mkdir(
             parents=True, exist_ok=True
         )
 
         StableDiffusionXLPipeline.save_lora_weights(
-            save_directory=os.path.join(args.weights_output_dir, "weights", "lora"),
+            save_directory=args.weights_output_dir,
             unet_lora_layers=best_lora_params["unet_lora_layers"],
             text_encoder_lora_layers=best_lora_params["text_encoder_lora_layers"],
             text_encoder_2_lora_layers=best_lora_params["text_encoder_2_lora_layers"],
