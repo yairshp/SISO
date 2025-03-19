@@ -443,7 +443,6 @@ def parse_args(input_args=None):
     )
     # added args
     parser.add_argument("--prompt", type=str, default=None)
-    parser.add_argument("--num_ref_images", type=int, required=False)
     parser.add_argument("--subject_image_path", type=str, required=False)
     parser.add_argument("--subject_class", type=str, required=False, default=None)
     parser.add_argument("--dino_model_name", type=str, default="vit_large_patch14_dinov2.lvd142m")
@@ -965,19 +964,6 @@ def main(args):
                     image_out.detach().permute(0, 2, 3, 1).cpu().numpy()
                 )[0]
                 image_out.save(f"{args.output_dir}/epoch_{epoch}.png")
-
-                general_utils.log_all_losses(
-                    {
-                        "total_losses": total_losses,
-                        **(
-                            {"ir_losses": ir_losses, "dino_losses": dino_losses}
-                            if args.criterion_type
-                            == CriterionType.ir_dino_ensemble.value
-                            else {}
-                        ),
-                    },
-                    args.output_dir,
-                )
 
             if loss <= best_loss:
                 image_out = general_utils.numpy_to_pil(

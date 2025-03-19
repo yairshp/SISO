@@ -15,13 +15,8 @@
 
 import argparse
 import copy
-import itertools
 import logging
-import math
 import os
-import random
-import shutil
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -35,15 +30,9 @@ from accelerate.utils import (
     ProjectConfiguration,
     set_seed,
 )
-from huggingface_hub import create_repo, upload_folder
-from huggingface_hub.utils import insecure_hashlib
 from peft import LoraConfig, set_peft_model_state_dict
 from peft.utils import get_peft_model_state_dict
 from PIL import Image
-from PIL.ImageOps import exif_transpose
-from torch.utils.data import Dataset
-from torchvision import transforms
-from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
 from transformers import AutoTokenizer, Gemma2Model
 
@@ -57,32 +46,20 @@ from diffusers import (
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import (
     cast_training_params,
-    compute_density_for_timestep_sampling,
-    compute_loss_weighting_for_sd3,
-    free_memory,
 )
 from diffusers.utils import (
-    check_min_version,
     convert_unet_state_dict_to_peft,
-    is_wandb_available,
 )
-from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_torch_npu_available
 from diffusers.utils.torch_utils import is_compiled_module
 
 from local_pipelines.pipeline_sana_with_grads import SanaPipelineWithGrads
 from utils.enums import CriterionType
-import utils.classifier_utils as classifier_utils
+import utils.dino_utils as dino_utils
 import utils.general_utils as general_utils
 import utils.ir_features_utils as ir_features_utils
-import utils.alpha_clip_utils as alpha_clip_utils
-import utils.detection_utils as detection_utils
-import matplotlib.pyplot as plt
-import pytorch_lightning as pl
-import torchvision.transforms.functional as TF
 from PIL import Image
 
-pl.seed_everything(35)
 
 logger = get_logger(__name__)
 
@@ -580,23 +557,18 @@ def parse_args(input_args=None):
     )
     # added args
     parser.add_argument("--prompt", type=str, default=None)
-    parser.add_argument("--criterion_type", type=str, required=True)
-    parser.add_argument("--classifier_model_name", type=str, required=True)
-    parser.add_argument("--num_ref_images", type=int, required=False)
-    parser.add_argument("--subject_image_path_or_url", type=str, required=False)
+    parser.add_argument("--subject_image_path", type=str, required=False)
     parser.add_argument("--subject_class", type=str, required=False, default=None)
+    parser.add_argument("--dino_model_name", type=str, default="vit_large_patch14_dinov2.lvd142m")
+    parser.add_argument("--ir_features_path", type=str, default="third_party/IR_dependencies/ir_features.pth")
     parser.add_argument("--ir_features_weight", type=float, default=1.0)
     parser.add_argument("--dino_features_weight", type=float, default=1.0)
     parser.add_argument("--early_stopping_max_count", type=int, default=5)
     parser.add_argument("--early_stopping_threshold_percentage", type=int, default=5)
     parser.add_argument("--num_inference_steps", type=int, default=4)
-    parser.add_argument("--crop_generated_image", action="store_true")
-    parser.add_argument("--use_init_image", action="store_true")
-    parser.add_argument("--strength", type=float, default=0.5)
     parser.add_argument("--save_weights", action="store_true")
     parser.add_argument("--weights_output_dir", type=str, default=None)
     parser.add_argument("--log_every_epoch", action="store_true")
-    parser.add_argument("--save_loss_threshold", type=float, default=None)
     parser.add_argument("--num_grad_steps", type=int, default=1)
 
     if input_args is not None:
@@ -613,7 +585,7 @@ def parse_args(input_args=None):
 
 def main(args):
     print("loading subject image...")
-    subject_image = general_utils.load_image(args.subject_image_path_or_url)
+    subject_image = general_utils.load_image(args.subject_image_path)
     subject_image_arr = general_utils.image_to_tensor(subject_image)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir)
@@ -877,104 +849,20 @@ def main(args):
             safeguard_warmup=args.prodigy_safeguard_warmup,
         )
 
-    # def compute_text_embeddings(prompt, text_encoding_pipeline):
-    #     text_encoding_pipeline = text_encoding_pipeline.to(accelerator.device)
-    #     with torch.no_grad():
-    #         prompt_embeds, prompt_attention_mask, _, _ = (
-    #             text_encoding_pipeline.encode_prompt(
-    #                 prompt,
-    #                 max_sequence_length=args.max_sequence_length,
-    #                 complex_human_instruction=args.complex_human_instruction,
-    #             )
-    #         )
-    #     if args.offload:
-    #         text_encoding_pipeline = text_encoding_pipeline.to("cpu")
-    #     prompt_embeds = prompt_embeds.to(transformer.dtype)
-    #     return prompt_embeds, prompt_attention_mask
-
-    # If no type of tuning is done on the text_encoder and custom instance prompts are NOT
-    # provided (i.e. the --instance_prompt is used for all images), we encode the instance prompt once to avoid
-    # the redundant encoding.
-    # if not train_dataset.custom_instance_prompts:
-    #     instance_prompt_hidden_states, instance_prompt_attention_mask = (
-    #         compute_text_embeddings(args.instance_prompt, text_encoding_pipeline)
-    #     )
-
-    # Handle class prompt for prior-preservation.
-    # if args.with_prior_preservation:
-    #     class_prompt_hidden_states, class_prompt_attention_mask = (
-    #         compute_text_embeddings(args.class_prompt, text_encoding_pipeline)
-    #     )
-
-    # Clear the memory here
-    # if not train_dataset.custom_instance_prompts:
-    #     del text_encoder, tokenizer
-    #     free_memory()
-
-    # If custom instance prompts are NOT provided (i.e. the instance prompt is used for all images),
-    # pack the statically computed variables appropriately here. This is so that we don't
-    # have to pass them to the dataloader.
-    # if not train_dataset.custom_instance_prompts:
-    #     prompt_embeds = instance_prompt_hidden_states
-    #     prompt_attention_mask = instance_prompt_attention_mask
-    #     if args.with_prior_preservation:
-    #         prompt_embeds = torch.cat(
-    #             [prompt_embeds, class_prompt_hidden_states], dim=0
-    #         )
-    #         prompt_attention_mask = torch.cat(
-    #             [prompt_attention_mask, class_prompt_attention_mask], dim=0
-    #         )
-
-    vae_config_scaling_factor = vae.config.scaling_factor
-    # if args.cache_latents:
-    #     latents_cache = []
-    #     vae = vae.to(accelerator.device)
-    #     for batch in tqdm(train_dataloader, desc="Caching latents"):
-    #         with torch.no_grad():
-    #             batch["pixel_values"] = batch["pixel_values"].to(
-    #                 accelerator.device, non_blocking=True, dtype=vae.dtype
-    #             )
-    #             latents_cache.append(vae.encode(batch["pixel_values"]).latent)
-
-    #     if args.validation_prompt is None:
-    #         del vae
-    #         free_memory()
-
-    # Scheduler and math around the number of training steps.
-    # overrode_max_train_steps = False
-    # num_update_steps_per_epoch = math.ceil(
-    #     len(train_dataloader) / args.gradient_accumulation_steps
-    # )
-    # if args.max_train_steps is None:
-    #     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    #     overrode_max_train_steps = True
 
     lr_scheduler = get_scheduler(
         args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=args.num_train_epochs,
-        # num_training_steps=args.max_train_steps * accelerator.num_processes,
         num_cycles=args.lr_num_cycles,
         power=args.lr_power,
     )
 
     # Prepare everything with our `accelerator`.
-    # transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-    #     transformer, optimizer, train_dataloader, lr_scheduler
-    # )
     transformer, optimizer, lr_scheduler = accelerator.prepare(
         transformer, optimizer, lr_scheduler
     )
-
-    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
-    # num_update_steps_per_epoch = math.ceil(
-    #     len(train_dataloader) / args.gradient_accumulation_steps
-    # )
-    # if overrode_max_train_steps:
-    #     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    # # Afterwards we recalculate our number of training epochs
-    # args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -982,21 +870,8 @@ def main(args):
         tracker_name = "dreambooth-sana-lora"
         accelerator.init_trackers(tracker_name, config=vars(args))
 
-    # Train!
-    # total_batch_size = (
-    #     args.train_batch_size
-    #     * accelerator.num_processes
-    #     * args.gradient_accumulation_steps
-    # )
-
     logger.info("***** Running training *****")
-    # logger.info(f"  Num examples = {len(train_dataset)}")
-    # logger.info(f"  Num batches each epoch = {len(train_dataloader)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
-    # logger.info(f"  Instantaneous batch size per device = {args.train_batch_size}")
-    # logger.info(
-    #     f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
-    # )
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     global_step = 0
@@ -1005,116 +880,47 @@ def main(args):
     # Potentially load in the weights and states from a previous save
     if args.resume_from_checkpoint:
         accelerator.print(f"Resuming from checkpoint {args.resume_from_checkpoint}")
-    # if args.resume_from_checkpoint:
-    #     if args.resume_from_checkpoint != "latest":
-    #         path = os.path.basename(args.resume_from_checkpoint)
-    #     else:
-    #         # Get the mos recent checkpoint
-    #         dirs = os.listdir(args.output_dir)
-    #         dirs = [d for d in dirs if d.startswith("checkpoint")]
-    #         dirs = sorted(dirs, key=lambda x: int(x.split("-")[1]))
-    #         path = dirs[-1] if len(dirs) > 0 else None
 
-    #     if path is None:
-    #         accelerator.print(
-    #             f"Checkpoint '{args.resume_from_checkpoint}' does not exist. Starting a new training run."
-    #         )
-    #         args.resume_from_checkpoint = None
-    #         initial_global_step = 0
-    #     else:
-    #         accelerator.print(f"Resuming from checkpoint {path}")
-    #         accelerator.load_state(os.path.join(args.output_dir, path))
-    #         global_step = int(path.split("-")[1])
-
-    #         initial_global_step = global_step
-    #         first_epoch = global_step // num_update_steps_per_epoch
-
-    # else:
     initial_global_step = 0
 
     progress_bar = tqdm(
         range(0, args.num_train_epochs),
-        # range(0, args.max_train_steps),
         initial=initial_global_step,
         desc="Steps",
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
 
-    # def get_sigmas(timesteps, n_dim=4, dtype=torch.float32):
-    #     sigmas = noise_scheduler_copy.sigmas.to(device=accelerator.device, dtype=dtype)
-    #     schedule_timesteps = noise_scheduler_copy.timesteps.to(accelerator.device)
-    #     timesteps = timesteps.to(accelerator.device)
-    #     step_indices = [(schedule_timesteps == t).nonzero().item() for t in timesteps]
+    dino_criterion = dino_utils.get_dino_features_negative_mean_cos_sim
+    ir_criterion = ir_features_utils.get_ir_features_negative_mean_cos_sim
 
-    #     sigma = sigmas[step_indices].flatten()
-    #     while len(sigma.shape) < n_dim:
-    #         sigma = sigma.unsqueeze(-1)
-    #     return sigma
-
-    # get criterion
-    if (
-        args.criterion_type == CriterionType.ir_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        ir_criterion = general_utils.get_criterion(CriterionType.ir_features.value)
-    if (
-        args.criterion_type == CriterionType.classifier_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        dino_criterion = general_utils.get_criterion(
-            CriterionType.classifier_features.value
+    dino, transforms_configs = (
+            dino_utils.get_model_and_transforms_configs(
+                args.dino_model_name
+            )
         )
-    if args.criterion_type == CriterionType.alpha_clip.value:
-        alpha_clip_criterion = general_utils.get_criterion(
-            CriterionType.alpha_clip.value
-        )
-
-    # get model
-    if (
-        args.criterion_type == CriterionType.ir_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        ir_feature_extractor, feature_extractor_transforms = (
+    ir_feature_extractor, feature_extractor_transforms = (
             ir_features_utils.get_ir_model_and_transforms(
-                "/cortex/users/yairshp/pretrained_models/IR_features/ir_features.pth",
+                args.ir_features_path,
                 device=accelerator.device,
             )
-        )  # TODO add argument for model path
-        ir_feature_extractor.eval()
-        ir_feature_extractor = ir_feature_extractor.to(accelerator.device)
-    if (
-        args.criterion_type == CriterionType.classifier_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        classifier, transforms_configs = (
-            classifier_utils.get_model_and_transforms_configs(
-                args.classifier_model_name
-            )
-        )
-    if args.criterion_type == CriterionType.alpha_clip.value:
-        alpha_clip_model = alpha_clip_utils.load_alpha_clip()
+        ) 
+    ir_feature_extractor.eval()
+    ir_feature_extractor = ir_feature_extractor.to(accelerator.device)
 
-    # get reference features
-    if (
-        args.criterion_type == CriterionType.ir_features.value
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        with torch.no_grad():
-            ir_subject_image_features = ir_features_utils.get_ir_features(
-                ir_feature_extractor, feature_extractor_transforms, subject_image_arr
-            )
-    if (
-        args.criterion_type == "classifier_features"
-        or args.criterion_type == CriterionType.ir_dino_ensemble.value
-    ):
-        dino_subject_image_input = classifier_utils.prepare_for_classifier(
-            subject_image_arr, transforms_configs
-        ).cuda()
-        with torch.no_grad():
-            dino_subject_image_features = classifier_utils.get_classifier_features(
-                classifier, dino_subject_image_input
-            )
+    dino_subject_image_input = dino_utils.prepare_for_dino(
+        subject_image_arr, transforms_configs
+    ).cuda()
+    with torch.no_grad():
+        dino_subject_image_features = dino_utils.get_dino_features(
+            dino, dino_subject_image_input
+        )
+
+    with torch.no_grad():
+        ir_subject_image_features = ir_features_utils.get_ir_features(
+            ir_feature_extractor, feature_extractor_transforms, subject_image_arr
+        )
+
 
     pipeline = SanaPipelineWithGrads.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -1158,30 +964,23 @@ def main(args):
             image_out = image  # save for visaualization
 
             loss = 0
-            if (
-                args.criterion_type == CriterionType.ir_features.value
-                or args.criterion_type == CriterionType.ir_dino_ensemble.value
-            ):
-                ir_loss = ir_criterion(
-                    ir_feature_extractor,
-                    feature_extractor_transforms,
-                    image,
-                    ir_subject_image_features,
-                )
-                ir_losses.append(ir_loss.detach().item())
-                loss += args.ir_features_weight * ir_loss
-            if (
-                args.criterion_type == CriterionType.classifier_features.value
-                or args.criterion_type == CriterionType.ir_dino_ensemble.value
-            ):
-                dino_loss = dino_criterion(
-                    classifier,
-                    transforms_configs,
-                    image,
-                    dino_subject_image_features,
-                )
-                dino_losses.append(dino_loss.detach().item())
-                loss += args.dino_features_weight * dino_loss
+            ir_loss = ir_criterion(
+                ir_feature_extractor,
+                feature_extractor_transforms,
+                image,
+                ir_subject_image_features,
+            )
+            ir_losses.append(ir_loss.detach().item())
+            loss += args.ir_features_weight * ir_loss
+
+            dino_loss = dino_criterion(
+                dino,
+                transforms_configs,
+                image,
+                dino_subject_image_features,
+            )
+            dino_losses.append(dino_loss.detach().item())
+            loss += args.dino_features_weight * dino_loss
 
             total_losses += [loss.detach().item()]
 
@@ -1201,14 +1000,13 @@ def main(args):
                 best_image = image_out
 
                 if args.save_weights and accelerator.is_main_process:
-                    best_transformer = unwrap_model(transformer)
                     best_transformer_lora_layers = get_peft_model_state_dict(
                         transformer
                     )
 
             if loss < best_loss * (1 + args.early_stopping_threshold_percentage / 100):
                 best_loss = loss
-                early_stopping_count = 0  # TODO check if zeroing is best option
+                early_stopping_count = 0
             else:
                 print(
                     f"Early stopping count: {early_stopping_count}. Best loss: {best_loss}, Current loss: {loss}"
@@ -1231,49 +1029,15 @@ def main(args):
                     )[0]
                 image_out.save(f"{args.output_dir}/epoch_{epoch}.png")
 
-                general_utils.log_all_losses(
-                    {
-                        "total_losses": total_losses,
-                        **(
-                            {"ir_losses": ir_losses, "dino_losses": dino_losses}
-                            if args.criterion_type
-                            == CriterionType.ir_dino_ensemble.value
-                            else {}
-                        ),
-                    },
-                    args.output_dir,
-                )
-
             if early_stopping_count >= args.early_stopping_max_count:
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-    if args.save_loss_threshold is None or best_loss < args.save_loss_threshold:
-        # save losses array to disk as an npy file
-        np.save(f"{args.output_dir}/total_losses.npy", np.array(total_losses))
-        if args.criterion_type == CriterionType.ir_dino_ensemble.value:
-            np.save(f"{args.output_dir}/ir_losses.npy", np.array(ir_losses))
-            np.save(f"{args.output_dir}/dino_losses.npy", np.array(dino_losses))
-
-        # save best image
-        best_image.save(f"{args.output_dir}/result.png")
-
-        if not args.log_every_epoch:
-            general_utils.log_all_losses(
-                {
-                    "total_losses": total_losses,
-                    **(
-                        {"ir_losses": ir_losses, "dino_losses": dino_losses}
-                        if args.criterion_type == CriterionType.ir_dino_ensemble.value
-                        else {}
-                    ),
-                },
-                args.output_dir,
-            )
+    # save best image
+    best_image.save(f"{args.output_dir}/result.png")
 
     del pipeline
     torch.cuda.empty_cache()
-
     accelerator.end_training()
 
     if args.save_weights:
