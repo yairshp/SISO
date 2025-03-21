@@ -6,7 +6,7 @@
 
 <a href=""><img src="https://img.shields.io/static/v1?label=Project&message=Website&color=red" height=20.5></a> 
 
-<a href=""><img src="" height=20.5></a>
+<a href="https://arxiv.org/abs/2503.16025"><img src="https://img.shields.io/badge/arXiv-2503.16025-b31b1b.svg" height=20.5></a>
 
 <p align="center">
 <img src="figures/teaser.png" width="800px"/>
