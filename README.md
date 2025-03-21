@@ -82,3 +82,16 @@ python inference_prompt_simplification.py --model_name Efficient-Large-Model/San
 ```
  python siso_editing_sdxl.py --output_dir logs/dog_editing --seed=42 --lr_warmup_steps 0 --lr_scheduler constant --learning_rate 3e-4 --train_batch_size 1 --resolution 512 --pretrained_model_name_or_path stabilityai/sdxl-turbo --num_train_epochs 50 --bg_mse_loss_weight 10. --ir_features_weight 1.0 --dino_features_weight 1.0 --early_stopping_threshold_percentage 3 --early_stopping_max_count 7 --input_image_path example_images/dog_input.png --subject_image_path example_images/dog_subject.png --ir_features_path <path_to_IR_weights>
 ```
+
+
+## Citation
+
+If you use this code for your research, please cite our paper:
+```
+@article{shpitzer2025siso,,
+  author    = {Shpitzer, Yair and Chechik, Gal and Schwartz, Idan},
+  title     = {Single Image Iterative Subject-driven Generation and Editing},
+  journal   = {arXiv preprint arXiv:2503.16025},
+  year      = {2025},
+}
+```
