@@ -31,7 +31,7 @@ conda env create -f environment.yml
 Install the dependencies for the IR feature extractor:
 
 ```
-cd IR_dependencies/open_clip_280
+cd third_party/IR_dependencies/open_clip_280
 pip install -e .
 cd ../open_clip_280_overlap
 pip install -e .
