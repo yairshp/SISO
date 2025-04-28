@@ -88,7 +88,7 @@ python inference_prompt_simplification.py --model_name Efficient-Large-Model/San
 
 If you use this code for your research, please cite our paper:
 ```
-@article{shpitzer2025siso,,
+@article{shpitzer2025siso,
   author    = {Shpitzer, Yair and Chechik, Gal and Schwartz, Idan},
   title     = {Single Image Iterative Subject-driven Generation and Editing},
   journal   = {arXiv preprint arXiv:2503.16025},
