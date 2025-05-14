@@ -31,7 +31,7 @@ conda env create -f environment.yml
 Install the dependencies for the IR feature extractor:
 
 ```
-cd third_party/IR_dependencies/open_clip_280
+cd IR_dependencies/open_clip_280
 pip install -e .
 cd ../open_clip_280_overlap
 pip install -e .
@@ -58,7 +58,7 @@ python inference_prompt_simplification.py --model_name black-forest-labs/FLUX.1-
 ### SDXL
 
 ```
-python siso_generation_flux.py --subject_image_path example_images/dog_subject.png --prompt a\ photo\ of\ a\ dog --train_text_encoder --output_dir logs/dog_generation --lr_warmup_steps 0 --lr_scheduler constant --train_batch_size 1 --resolution 512 --pretrained_model_name_or_path stabilityai/sdxl-turbo --num_train_epochs 50 --early_stopping_threshold_percentage 3 --early_stopping_max_count 7 --num_inference_steps 1 --learning_rate 2e-4 --seed=42 --save_weights --weights_output_dir weights/dog --ir_features_path <path_to_IR_weights>
+python siso_generation_sdxl.py --subject_image_path example_images/dog_subject.png --prompt a\ photo\ of\ a\ dog --train_text_encoder --output_dir logs/dog_generation --lr_warmup_steps 0 --lr_scheduler constant --train_batch_size 1 --resolution 512 --pretrained_model_name_or_path stabilityai/sdxl-turbo --num_train_epochs 50 --early_stopping_threshold_percentage 3 --early_stopping_max_count 7 --num_inference_steps 1 --learning_rate 2e-4 --seed=42 --save_weights --weights_output_dir weights/dog --ir_features_path <path_to_IR_weights>
 
 # use the optimized weights for different prompts
 python inference_prompt_simplification.py --model_name black-forest-labs/FLUX.1-schnell --lora_weights_path </path/to/weights> --num_inference_steps 4 --prompt "a dog in the park" --guidance_scale 0.0 --output_path </path/to/output> --seed 42
@@ -88,7 +88,7 @@ python inference_prompt_simplification.py --model_name Efficient-Large-Model/San
 
 If you use this code for your research, please cite our paper:
 ```
-@article{shpitzer2025siso,
+@article{shpitzer2025siso,,
   author    = {Shpitzer, Yair and Chechik, Gal and Schwartz, Idan},
   title     = {Single Image Iterative Subject-driven Generation and Editing},
   journal   = {arXiv preprint arXiv:2503.16025},
